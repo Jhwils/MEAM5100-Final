@@ -12,8 +12,8 @@ HTML510Server html(80);
 // -------------------------------------------------------------
 // IMU SETUP
 // -------------------------------------------------------------
-#define SDA_PIN 4
-#define SCL_PIN 5
+#define SDA_PIN 36
+#define SCL_PIN 37
 #define BNO55_ADDRESS_A 0x28
 
 Adafruit_BNO055 bno = Adafruit_BNO055(55, BNO55_ADDRESS_A, &Wire);
