@@ -7,14 +7,23 @@
 #include "Adafruit_VL53L1X.h"
 #include <math.h>
 
-// ================= WIFI =================
+// ================= WIFI ================
 const char* ssid = "LEDcontrol";
 HTML510Server html(80);
+uint8_t packets = 0;
+unsigned long lastPacketMillis = 0;
+const unsigned long PACKET_INTERVAL_MS = 500;  // 2 Hz
+
+// ============= TOP HAT =================
+// I2C Slave Communication
+#define I2C_SLAVE_ADDR 0x28
+#define SDA_PIN 36
+#define SCL_PIN 37
 
 // ================= IMU =================
 #define SDA_PIN 36
 #define SCL_PIN 37
-Adafruit_BNO055 bno(55, 0x28, &Wire);
+Adafruit_BNO055 bno(55, 0x29, &Wire);
 
 // ================= TOF =================
 Adafruit_VL53L1X tofLeft, tofFront, tofRight;
@@ -37,9 +46,22 @@ const int revR = 42;
 const int PWM_RES  = 12;
 const int MAX_DUTY = 4095;
 
+// ================= SERVO =================
+// Servo control pin (choose an appropriate pin for your servo)
+const int SERVO_PIN = 21;  // You can change this to any valid PWM pin
+const uint16_t SERVO_MIN_US = 1350;
+const uint16_t SERVO_MAX_US = 2400;
+uint16_t servoPulseUs = SERVO_MIN_US;
+unsigned long lastServoFrameUs = 0;
+bool servoHigh = false;
+unsigned long lastServoMoveMs = 0;
+const unsigned long SERVO_MOVE_INTERVAL_MS = 500; // 2 Hz
+bool servoForward = true;
+
+
 // ================= SPEED =================
-int basePWM = 25;
-#define TURN_PWM 20
+int basePWM = 45;
+#define TURN_PWM 30
 
 // ================= WALL FOLLOW =================
 #define WALL_TARGET_MM 100
@@ -97,6 +119,21 @@ void stopMotors() {
   digitalWrite(revR, LOW);
 }
 
+bool sendWiFiPacketsByte(uint8_t value) {
+  // Send data to slave
+  Wire.beginTransmission(I2C_SLAVE_ADDR);
+  Wire.write(value);
+  uint8_t error = Wire.endTransmission();   // 0 = success
+
+  if (error == 0) {
+    Serial.printf("[TX] Sent: %u\n", value);
+    return true;
+  } else {
+    Serial.printf("[TX ERROR] Code: %d\n", error);
+    return false;
+  }
+}
+
 // ================= TOF =================
 void updateTOF() {
   if (tofLeft.dataReady()) {
@@ -113,6 +150,44 @@ void updateTOF() {
   //   distRight = tofRight.distance();
   //   tofRight.clearInterrupt();
   // }
+}
+
+// ================ SERVO ================
+void updateServo() {
+  unsigned long now = micros();
+
+  // Start of 20ms frame
+  if (!servoHigh && (now - lastServoFrameUs >= 20000)) {
+    lastServoFrameUs = now;
+    digitalWrite(SERVO_PIN, HIGH);
+    servoHigh = true;
+  }
+
+  // End of pulse
+  if (servoHigh && (now - lastServoFrameUs >= servoPulseUs)) {
+    digitalWrite(SERVO_PIN, LOW);
+    servoHigh = false;
+  }
+
+  Serial.println("Updating servo speed");
+}
+
+void updateServoMotion() {
+  unsigned long now = millis();
+
+  if (now - lastServoMoveMs >= SERVO_MOVE_INTERVAL_MS) {
+    lastServoMoveMs = now;
+
+    if (servoForward) {
+      servoPulseUs = SERVO_MAX_US;
+    } else {
+      servoPulseUs = SERVO_MIN_US;
+    }
+
+    servoForward = !servoForward;
+
+    Serial.println("Updating servo speed");
+  }
 }
 
 // ================= TURN (AUTO) =================
@@ -186,12 +261,35 @@ void wallFollow() {
   }
 }
 
+// bool motorStalled() {
+//   // Example: use front TOF distance to detect stall
+//   // If moving forward and front distance doesn't change much, consider stalled
+//   static int16_t lastDistFront = -1;
+//   static unsigned long lastCheck = 0;
+
+//   unsigned long now = millis();
+//   if (now - lastCheck < 200) return false; // check every 200 ms
+//   lastCheck = now;
+
+//   if (motion != 1) return false; // only check forward motion
+//   if (distFront < 0) return false; // invalid reading
+
+//   if (lastDistFront >= 0 && abs(distFront - lastDistFront) < 2) { // <2mm change = stalled
+//     lastDistFront = distFront;
+//     return true;
+//   }
+
+//   lastDistFront = distFront;
+//   return false;
+// }
+
 // ================= WEB =================
 extern const char Slider[];
 
 void Homepage() { html.sendhtml(Slider); }
 
 void Forward() {
+  packets++;
   autoMode = false;
   motion = 1;
   yawOffset = yawRaw;
@@ -199,10 +297,11 @@ void Forward() {
   digitalWrite(revL, LOW);
   digitalWrite(fwdR, HIGH);
   digitalWrite(revR, LOW);
-  setPWM(25, 25);
+  setPWM(35, 35);
 }
 
 void Backward() {
+  packets++;
   autoMode = false;
   motion = 2;
   digitalWrite(fwdL, LOW);
@@ -213,23 +312,25 @@ void Backward() {
 }
 
 void Left() {
+  packets++;
   autoMode = false;
   motion = 3;
   digitalWrite(fwdL, LOW);
   digitalWrite(revL, HIGH);
   digitalWrite(fwdR, HIGH);
   digitalWrite(revR, LOW);
-  setPWM(basePWM, basePWM);
+  setPWM(25, 25);
 }
 
 void Right() {
+  packets++;
   autoMode = false;
   motion = 4;
   digitalWrite(fwdL, HIGH);
   digitalWrite(revL, LOW);
   digitalWrite(fwdR, LOW);
   digitalWrite(revR, HIGH);
-  setPWM(basePWM, basePWM);
+  setPWM(25, 25);
 }
 
 void StopMotor() {
@@ -271,7 +372,7 @@ void Status() {
 void setup() {
 
   Serial.begin(115200);
-  Wire.begin(SDA_PIN, SCL_PIN);
+  Wire.begin(SDA_PIN, SCL_PIN, 40000);
 
   WiFi.softAP(ssid);
   html.begin(80);
@@ -322,6 +423,10 @@ void setup() {
   // tofRight.begin(0x32, &Wire);
   // tofRight.startRanging();
 
+  pinMode(SERVO_PIN, OUTPUT);
+  digitalWrite(SERVO_PIN, LOW);
+
+
   Serial.println("=== ROBOT READY ===");
 }
 
@@ -342,4 +447,28 @@ void loop() {
   yawRobot = wrap180(yawRaw - yawOffset);
 
   if (autoMode) wallFollow();
+
+  unsigned long now = millis();
+
+  if (now - lastPacketMillis >= PACKET_INTERVAL_MS) {
+    lastPacketMillis = now;
+
+    sendWiFiPacketsByte(uint8_t (packets / 4));
+    Serial.printf("Sent data: %u\n", uint8_t (packets / 4));
+
+    packets = 0;   // reset after send
+  }
+
+  updateServo();        // generates pulses (MUST be called often)
+  updateServoMotion(); // updates target position (slow)
+
+//   // --- Adaptive PWM if motor stalls ---
+// if (!autoMode && motion > 0) {  // only in manual mode when moving
+//   if (motorStalled()) {
+//     Serial.println("Motor stall detected! Increasing PWM...");
+//     basePWM = constrain(basePWM + 5, 0, 60);  // increase by 5%
+//     setPWM(basePWM, basePWM);
+//   }
+// }
+
 }
